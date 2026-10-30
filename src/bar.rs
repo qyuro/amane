@@ -1,14 +1,29 @@
 use amane::{
-    Battery, Center, Color, Column, Full, Horizontal, InputArea, Layer, LayerWindow, Link, Margin,
-    Monitor, Network, Palette, Parent, Padding, Pointer, Rectangle, Row, Service, Size, Text,
-    Vertical, Weight, Widget, Workspaces, Zone,
+    Battery, Canvas, Center, Color, Column, Full, Horizontal, InputArea, Layer, LayerWindow, Link,
+    Margin, Monitor, Network, Palette, Path, Pointer, Rectangle, Row, Service, Shape, Size, Stack,
+    Text, Vertical, Weight, Widget, Workspaces, Zone,
 };
 
 use crate::clock::Clock;
-use crate::state::{toggle_power, toggle_wifi, Ui};
+use crate::state::{toggle_power, toggle_wifi, touch, Ui};
 use crate::theme::{with_alpha, Theme};
 
 const ICON_FONT: &str = "JetBrainsMono Nerd Font";
+
+// the bar has two sizes: the full one and the minimal one with only the ovals
+const HEIGHT: f32 = 34.0;
+const PADDING: f32 = 14.0;
+
+// the clock keeps a little more room around it than the modules keep between them
+const GAP: f32 = 9.0;
+const CLOCK_GAP: f32 = 24.0;
+
+// the clock is wider than two digits, so a minute change never moves the bar
+const CLOCK_WIDTH: f32 = 28.0;
+
+// the top corners turn back into the screen edge, so the bar flows out of it
+const FLARE: f32 = 8.0;
+const BOTTOM: f32 = 18.0;
 
 pub fn view(monitor: &Monitor) -> LayerWindow {
     let palette = Palette::read();
@@ -21,83 +36,100 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let workspaces = Workspaces::read();
 
     let spaces = workspace_row(monitor, &workspaces, &theme);
-    let clock = clock_view(&clock, &theme);
 
     let right = Row::new(vec![
         Box::new(wifi_button(&network, &theme, ui.wifi_open)),
         Box::new(battery_button(&battery, &theme, ui.power_open)),
     ])
-    .gap(9.0)
+    .gap(GAP)
     .align(Center);
 
-    // the clock has to sit on the middle of the screen, so the narrower side
-    // gets its free space back by shifting the whole pill
+    // measured before the widgets move into their wrappers
     let spaces_width = fixed_width(&spaces);
     let right_width = fixed_width(&right);
 
-    let content = Row::new(vec![
-        Box::new(spaces) as Box<dyn Widget>,
-        Box::new(clock),
-        Box::new(right),
-    ])
-    .gap(9.0)
-    .align(Center);
+    // the narrower side gets blank room, so the clock sits on the pill's own
+    // middle with the same distance to the left and right edge
+    let side = spaces_width.max(right_width);
 
-    // the pill is only as wide as its contents, and the rest of the window stays clear
-    let pill_width = fixed_width(&content) + 28.0;
+    let minimal_width = FLARE * 2.0 + PADDING * 2.0 + spaces_width;
+    let full_width = FLARE * 2.0 + PADDING * 2.0 + side * 2.0 + CLOCK_GAP * 2.0 + CLOCK_WIDTH;
 
-    /*
-     * the bubble hangs from the top edge with its corners rounded back into
-     * the screen, so it reads as if the bar is flowing out of it
-     */
-    let pill = Rectangle::new()
-        .width(pill_width)
-        .height(34.0)
-        .radius_top_left(12.0)
-        .radius_top_right(12.0)
-        .radius_bottom_left(18.0)
-        .radius_bottom_right(18.0)
-        .fill(theme.bar)
-        .padding(Padding {
-            left: 14.0,
-            right: 14.0,
-            top: 0.0,
-            bottom: 0.0,
-        })
-        .align_child(Center, Center)
-        .child(content);
+    // the window keeps its full width while the pill folds, so the compositor
+    // does not resize the surface on every frame of the animation
+    let window_width = full_width;
 
-    let centered_left = ((monitor.width as f32 - pill_width) / 2.0).max(0.0);
-    let shift = (right_width - spaces_width) / 2.0;
-    let pill_left = (centered_left + shift).max(0.0);
+    let place = ui.bar.value();
+    let pill_width = minimal_width + (full_width - minimal_width) * place;
+    let pill_left = (window_width - pill_width) / 2.0;
 
-    // the pill is drawn centered in the root, so the root keeps half the shift
-    // as padding on one side
-    let offset = (pill_left - centered_left) * 2.0;
+    // the clock and the modules fade in once the pill has opened a little
+    let fade = ((place - 0.4) / 0.6).clamp(0.0, 1.0);
+    let fade = fade * fade * (3.0 - 2.0 * fade);
 
-    let root = Rectangle::new()
-        .width(Parent)
-        .height(Parent)
-        .fill(Color::TRANSPARENT)
-        .padding(Padding {
-            left: offset.max(0.0),
-            right: (-offset).max(0.0),
-            top: 0.0,
-            bottom: 0.0,
-        })
-        .align_child(Center, Center)
-        .child(pill);
+    let mut layers: Vec<Box<dyn Widget>> = Vec::new();
 
-    /*
-     * a full-width surface with a transparent middle would still swallow clicks,
-     * so only the pill itself is part of the input region
-     */
-    let input_x = (pill_left - 2.0).max(0.0).round() as i32;
-    let input_width = (pill_width + 4.0).round() as i32;
+    // the bar itself, a canvas so the top corners can bend back outwards
+    layers.push(Box::new(
+        Rectangle::new()
+            .width(pill_width)
+            .height(HEIGHT)
+            .fill(Color::TRANSPARENT)
+            .translate(pill_left, 0.0)
+            .child(pill_shape(pill_width, &theme)),
+    ));
+
+    // the ovals stay at the body's left padding; in the minimal pill that is
+    // also the whole inner width, so they sit in the middle on their own
+    layers.push(Box::new(
+        Rectangle::new()
+            .width(spaces_width)
+            .height(HEIGHT)
+            .fill(Color::TRANSPARENT)
+            .align_child(Center, Center)
+            .translate(pill_left + FLARE + PADDING, 0.0)
+            .child(spaces),
+    ));
+
+    // leave the invisible modules out entirely, or they would catch clicks
+    // meant for the ovals while the bar is folded
+    if fade > 0.0 {
+        let clock_x = pill_left + (pill_width - CLOCK_WIDTH) / 2.0;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(CLOCK_WIDTH)
+                .height(HEIGHT)
+                .fill(Color::TRANSPARENT)
+                .opacity(fade)
+                .align_child(Center, Center)
+                .translate(clock_x, 0.0)
+                .child(clock_view(&clock, &theme)),
+        ));
+
+        let right_x = pill_left + pill_width - FLARE - PADDING - right_width;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(right_width)
+                .height(HEIGHT)
+                .fill(Color::TRANSPARENT)
+                .opacity(fade)
+                .align_child(Center, Center)
+                .translate(right_x, 0.0)
+                .child(right),
+        ));
+    }
+
+    let content = Stack::new(layers).width(window_width).height(HEIGHT);
+
+    // the transparent sides of the window let clicks through, the pill does not
+    let input_x = pill_left.round() as i32;
+    let input_width = pill_width.round() as i32;
 
     LayerWindow::new()
-        .width(Full)
-        .height(34.0)
+        .width(window_width)
+        .height(HEIGHT)
         .anchor_vertical(Vertical::Top)
         .anchor_horizontal(Horizontal::Middle)
         .margin(Margin {
@@ -109,14 +141,42 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
         .layer(Layer::Top)
         .space(Zone::Reserve)
         .namespace("amane-bar")
-        .visible(!ui.bar_hidden)
         .input_region(vec![InputArea {
             x: input_x,
             y: 0,
             width: input_width,
-            height: 34,
+            height: HEIGHT.round() as i32,
         }])
-        .child(root)
+        .child(content)
+}
+
+/*
+ * the pill is flush with the screen's top edge and its sides bend back
+ * outwards into that edge; the flush top and the bent corners are what make
+ * it look like the bar grows out of the screen instead of lying under it
+ */
+fn pill_shape(width: f32, theme: &Theme) -> Canvas {
+    // a tiny pill would otherwise have its bottom corners cross each other
+    let bottom = BOTTOM
+        .min((width - FLARE * 2.0) / 2.0)
+        .min(HEIGHT / 2.0);
+
+    let path = Path::new()
+        .move_to(0.0, 0.0)
+        .arc(0.0, FLARE, FLARE, 0.0, 90.0)
+        .line_to(FLARE, HEIGHT - bottom)
+        .arc(FLARE + bottom, HEIGHT - bottom, bottom, 270.0, -90.0)
+        .line_to(width - FLARE - bottom, HEIGHT)
+        .arc(width - FLARE - bottom, HEIGHT - bottom, bottom, 180.0, -90.0)
+        .line_to(width - FLARE, FLARE)
+        .arc(width, FLARE, FLARE, 270.0, 90.0)
+        .close()
+        .fill(theme.bar);
+
+    Canvas::new()
+        .width(width)
+        .height(HEIGHT)
+        .shapes(vec![Box::new(path)])
 }
 
 fn fixed_width(widget: &impl Widget) -> f32 {
@@ -173,7 +233,10 @@ fn workspace_row(monitor: &Monitor, workspaces: &Workspaces, theme: &Theme) -> R
                 .radius(Full)
                 .fill(fill)
                 .cursor(Pointer)
-                .on_click(move |_| Workspaces::focus(id)),
+                .on_click(move |_| {
+                    Workspaces::focus(id);
+                    touch();
+                }),
         ));
     }
 
@@ -209,6 +272,7 @@ fn wifi_button(network: &Network, theme: &Theme, open: bool) -> Rectangle {
         )
 }
 
+// the percentage lives in the power panel now, so the clock can stay centered
 fn battery_button(battery: &Battery, theme: &Theme, open: bool) -> Rectangle {
     let (icon, color) = if !battery.present() {
         ("\u{f0425}", theme.muted)
@@ -220,32 +284,8 @@ fn battery_button(battery: &Battery, theme: &Theme, open: bool) -> Rectangle {
         (battery_icon(battery.percent()), theme.fg)
     };
 
-    let label = if battery.present() {
-        format!("{}%", battery.percent())
-    } else {
-        String::from("AC")
-    };
-
-    let content = Row::new(vec![
-        Box::new(
-            Text::new(icon)
-                .size(15.0)
-                .color(color)
-                .font(ICON_FONT)
-                .tight(),
-        ) as Box<dyn Widget>,
-        Box::new(
-            Text::new(label)
-                .size(12.0)
-                .color(theme.fg)
-                .weight(Weight::Medium),
-        ),
-    ])
-    .gap(4.0)
-    .align(Center);
-
     Rectangle::new()
-        .width(56.0)
+        .width(26.0)
         .height(24.0)
         .radius(Full)
         .fill(if open {
@@ -256,7 +296,13 @@ fn battery_button(battery: &Battery, theme: &Theme, open: bool) -> Rectangle {
         .align_child(Center, Center)
         .cursor(Pointer)
         .on_click(|_| toggle_power())
-        .child(content)
+        .child(
+            Text::new(icon)
+                .size(15.0)
+                .color(color)
+                .font(ICON_FONT)
+                .tight(),
+        )
 }
 
 fn wifi_icon(strength: u8) -> &'static str {

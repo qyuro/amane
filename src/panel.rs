@@ -17,6 +17,8 @@ pub fn wifi() -> LayerWindow {
     let ui = Ui::read();
     let network = Network::read();
 
+    let fade = ui.wifi.value();
+
     let mut content: Vec<Box<dyn Widget>> = Vec::new();
 
     content.push(Box::new(header(
@@ -60,6 +62,9 @@ pub fn wifi() -> LayerWindow {
         .fill(theme.panel)
         .border(1.0, theme.border)
         .padding(16.0)
+        .opacity(fade)
+        .scale(0.98 + 0.02 * fade)
+        .translate(0.0, (1.0 - fade) * -10.0)
         .child(body);
 
     LayerWindow::new()
@@ -76,7 +81,7 @@ pub fn wifi() -> LayerWindow {
         .layer(Layer::Overlay)
         .space(Zone::Ignore)
         .keyboard(Keyboard::OnDemand)
-        .visible(ui.wifi_open)
+        .visible(ui.wifi_open || fade > 0.0)
         .namespace("amane-wifi")
         .on_key(|key| {
             if key == Key::Escape {
@@ -93,6 +98,8 @@ pub fn power() -> LayerWindow {
     let ui = Ui::read();
     let power = PowerMode::read();
     let battery = Battery::read();
+
+    let fade = ui.power.value();
 
     let mut content: Vec<Box<dyn Widget>> = Vec::new();
 
@@ -139,6 +146,9 @@ pub fn power() -> LayerWindow {
         .fill(theme.panel)
         .border(1.0, theme.border)
         .padding(16.0)
+        .opacity(fade)
+        .scale(0.98 + 0.02 * fade)
+        .translate(0.0, (1.0 - fade) * -10.0)
         .child(body);
 
     LayerWindow::new()
@@ -155,7 +165,7 @@ pub fn power() -> LayerWindow {
         .layer(Layer::Overlay)
         .space(Zone::Ignore)
         .keyboard(Keyboard::OnDemand)
-        .visible(ui.power_open)
+        .visible(ui.power_open || fade > 0.0)
         .namespace("amane-power")
         .on_key(|key| {
             if key == Key::Escape {
