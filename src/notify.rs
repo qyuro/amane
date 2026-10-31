@@ -2,10 +2,11 @@ use std::time::{Duration, SystemTime};
 
 use amane::{
     Align, Center, Column, Color, Horizontal, Layer, LayerWindow, Margin, Notification,
-    Notifications, Palette, Parent, Padding, Pointer, Rectangle, Row, Service, Size, Text, Urgency,
+    Notifications, Palette, Parent, Padding, Pointer, Rectangle, Row, Service, Text, Urgency,
     Vertical, Weight, Widget, Zone,
 };
 
+use crate::history::History;
 use crate::theme::Theme;
 
 const WIDTH: f32 = 330.0;
@@ -19,9 +20,15 @@ pub fn view() -> LayerWindow {
     let theme = Theme::from(&palette);
 
     let notifications = Notifications::read();
+    let history = History::read();
 
-    // newest on top
-    let list: Vec<&Notification> = notifications.list().iter().rev().take(4).collect();
+    // Do Not Disturb keeps collecting the history, but nothing pops up
+    let list: Vec<&Notification> = if history.muted() {
+        Vec::new()
+    } else {
+        // newest on top
+        notifications.list().iter().rev().take(4).collect()
+    };
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
 
@@ -147,7 +154,7 @@ fn card(notification: &Notification, theme: &Theme) -> Rectangle {
 }
 
 // bodies may carry simple markup like <b>, which the text widget does not parse
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     let mut plain = String::new();
     let mut tag = false;
 

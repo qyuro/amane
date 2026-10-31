@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use amane::{Animation, Easing, Network, Service, TextInput};
 
+use crate::history::History;
+
 /// How long the full bar waits without input before it folds back to the ovals.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -12,6 +14,9 @@ pub struct Ui {
 
     /// the bar keeps only the workspace ovals
     pub bar_minimal: bool,
+
+    /// the notification history panel
+    pub history_open: bool,
 
     pub launcher_open: bool,
     pub launcher_query: String,
@@ -26,6 +31,7 @@ pub struct Ui {
     pub launcher: Animation<f32>,
     pub wifi: Animation<f32>,
     pub power: Animation<f32>,
+    pub history: Animation<f32>,
 
     /// the last click, key or toggle, so the bar can fold itself away
     pub last_activity: Instant,
@@ -43,6 +49,7 @@ impl Service for Ui {
             wifi_open: false,
             power_open: false,
             bar_minimal: false,
+            history_open: false,
             launcher_open: false,
             launcher_query: String::new(),
             launcher_selected: 0,
@@ -55,6 +62,7 @@ impl Service for Ui {
             launcher: overlay(),
             wifi: overlay(),
             power: overlay(),
+            history: overlay(),
 
             last_activity: Instant::now(),
         }
@@ -85,6 +93,7 @@ impl Service for Idle {
             !ui.bar_minimal
                 && !ui.wifi_open
                 && !ui.power_open
+                && !ui.history_open
                 && !ui.launcher_open
                 && ui.last_activity.elapsed() >= IDLE_TIMEOUT
         };
@@ -113,6 +122,9 @@ pub fn toggle_wifi() {
 
         ui.power_open = false;
         ui.power.to(0.0);
+
+        ui.history_open = false;
+        ui.history.to(0.0);
 
         ui.launcher_open = false;
         ui.launcher.to(0.0);
@@ -143,6 +155,9 @@ pub fn toggle_power() {
 
     ui.wifi_open = false;
     ui.wifi.to(0.0);
+
+    ui.history_open = false;
+    ui.history.to(0.0);
 
     ui.launcher_open = false;
     ui.launcher.to(0.0);
@@ -176,6 +191,48 @@ pub fn close_power() {
     ui.last_activity = Instant::now();
 }
 
+// the bell left of the clock, and `amane ipc call toggle-history`
+pub fn toggle_history() {
+    let opening = {
+        let mut ui = Ui::write();
+
+        let opening = !ui.history_open;
+        ui.history_open = opening;
+        ui.history.to(if opening { 1.0 } else { 0.0 });
+        ui.last_activity = Instant::now();
+
+        if opening {
+            ui.wifi_open = false;
+            ui.wifi.to(0.0);
+
+            ui.power_open = false;
+            ui.power.to(0.0);
+
+            ui.launcher_open = false;
+            ui.launcher.to(0.0);
+
+            ui.selected.clear();
+        }
+
+        opening
+    };
+
+    if opening {
+        forget_password();
+
+        // looking at the history counts as reading everything in it
+        History::mark_read();
+    }
+}
+
+pub fn close_history() {
+    let mut ui = Ui::write();
+
+    ui.history_open = false;
+    ui.history.to(0.0);
+    ui.last_activity = Instant::now();
+}
+
 // called from `amane ipc call toggle-bar`, which niri binds to Mod+O
 pub fn toggle_bar() {
     let minimal = {
@@ -193,6 +250,9 @@ pub fn toggle_bar() {
 
             ui.power_open = false;
             ui.power.to(0.0);
+
+            ui.history_open = false;
+            ui.history.to(0.0);
 
             ui.launcher_open = false;
             ui.launcher.to(0.0);
@@ -220,6 +280,9 @@ fn collapse_bar() {
 
     ui.power_open = false;
     ui.power.to(0.0);
+
+    ui.history_open = false;
+    ui.history.to(0.0);
 
     ui.launcher_open = false;
     ui.launcher.to(0.0);
@@ -251,6 +314,9 @@ pub fn toggle_launcher() {
 
             ui.power_open = false;
             ui.power.to(0.0);
+
+            ui.history_open = false;
+            ui.history.to(0.0);
 
             ui.selected.clear();
         }

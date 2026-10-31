@@ -1,14 +1,19 @@
 use amane::{
     Battery, Canvas, Center, Color, Column, Full, Horizontal, InputArea, Layer, LayerWindow, Link,
     Margin, Monitor, Network, Palette, Path, Pointer, Rectangle, Row, Service, Shape, Size, Stack,
-    Text, Vertical, Weight, Widget, Workspaces, Zone,
+    Text, Vertical, Weight, Widget, Workspaces, Zone, request_frame,
 };
 
 use crate::clock::Clock;
-use crate::state::{toggle_power, toggle_wifi, touch, Ui};
+use crate::history::History;
+use crate::layout::Layout;
+use crate::state::{toggle_history, toggle_power, toggle_wifi, touch, Ui};
 use crate::theme::{with_alpha, Theme};
 
 const ICON_FONT: &str = "JetBrainsMono Nerd Font";
+
+const BELL: &str = "\u{f0f3}";
+const BELL_OFF: &str = "\u{f1f6}";
 
 // the bar has two sizes: the full one and the minimal one with only the ovals
 const HEIGHT: f32 = 34.0;
@@ -21,6 +26,14 @@ const CLOCK_GAP: f32 = 24.0;
 // the clock is wider than two digits, so a minute change never moves the bar
 const CLOCK_WIDTH: f32 = 28.0;
 
+// the notification bell sits just left of the clock
+const BELL_WIDTH: f32 = 26.0;
+const BELL_GAP: f32 = 8.0;
+
+// the language chip takes the ovals' place for a moment after a switch
+const LANGUAGE_WIDTH: f32 = 30.0;
+const LANGUAGE_HEIGHT: f32 = 22.0;
+
 // the top corners turn back into the screen edge, so the bar flows out of it
 const FLARE: f32 = 8.0;
 const BOTTOM: f32 = 18.0;
@@ -30,10 +43,19 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let theme = Theme::from(&palette);
 
     let ui = Ui::read();
+    let layout = Layout::read();
     let clock = Clock::read();
+    let history = History::read();
     let network = Network::read();
     let battery = Battery::read();
     let workspaces = Workspaces::read();
+
+    // the chip holds for a moment after a switch, so it needs frames of its own
+    let flash = layout.flash_mix();
+
+    if layout.flash_active() {
+        request_frame();
+    }
 
     let spaces = workspace_row(monitor, &workspaces, &theme);
 
@@ -48,11 +70,16 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let spaces_width = fixed_width(&spaces);
     let right_width = fixed_width(&right);
 
-    // the narrower side gets blank room, so the clock sits on the pill's own
-    // middle with the same distance to the left and right edge
-    let side = spaces_width.max(right_width);
+    // the ovals and the language chip share one slot of a fixed width, so the
+    // chip can take their place without the clock or the pill moving
+    let slot_width = spaces_width.max(LANGUAGE_WIDTH);
 
-    let minimal_width = FLARE * 2.0 + PADDING * 2.0 + spaces_width;
+    // the narrower side gets blank room, so the clock sits on the pill's own
+    // middle with the same distance to the left and right edge; the left side
+    // also has to fit the bell, which widens the blank right side to match
+    let side = (slot_width + BELL_GAP + BELL_WIDTH).max(right_width);
+
+    let minimal_width = FLARE * 2.0 + PADDING * 2.0 + slot_width;
     let full_width = FLARE * 2.0 + PADDING * 2.0 + side * 2.0 + CLOCK_GAP * 2.0 + CLOCK_WIDTH;
 
     // the window keeps its full width while the pill folds, so the compositor
@@ -83,12 +110,18 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     // also the whole inner width, so they sit in the middle on their own
     layers.push(Box::new(
         Rectangle::new()
-            .width(spaces_width)
+            .width(slot_width)
             .height(HEIGHT)
             .fill(Color::TRANSPARENT)
             .align_child(Center, Center)
             .translate(pill_left + FLARE + PADDING, 0.0)
-            .child(spaces),
+            .child(language_slot(
+                spaces,
+                layout.current(),
+                flash,
+                slot_width,
+                &theme,
+            )),
     ));
 
     // leave the invisible modules out entirely, or they would catch clicks
@@ -105,6 +138,20 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
                 .align_child(Center, Center)
                 .translate(clock_x, 0.0)
                 .child(clock_view(&clock, &theme)),
+        ));
+
+        // the bell takes the spot just left of the centered clock
+        let bell_x = clock_x - BELL_GAP - BELL_WIDTH;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(BELL_WIDTH)
+                .height(HEIGHT)
+                .fill(Color::TRANSPARENT)
+                .opacity(fade)
+                .align_child(Center, Center)
+                .translate(bell_x, 0.0)
+                .child(bell_button(&history, &theme, ui.history_open)),
         ));
 
         let right_x = pill_left + pill_width - FLARE - PADDING - right_width;
@@ -184,6 +231,63 @@ fn fixed_width(widget: &impl Widget) -> f32 {
         Size::Fixed(width) => width,
         Size::Parent => 0.0,
     }
+}
+
+/*
+ * the ovals normally fill the slot; right after a layout switch they crossfade
+ * into a chip with the new language, and the slot's fixed width keeps
+ * everything to their right where it was
+ */
+fn language_slot(
+    spaces: Row,
+    language: &str,
+    flash: f32,
+    slot_width: f32,
+    theme: &Theme,
+) -> Stack {
+    let mut children: Vec<Box<dyn Widget>> = Vec::new();
+
+    // an invisible child would still take clicks, so it is left out entirely
+    if flash < 1.0 {
+        let ovals = Rectangle::new()
+            .width(slot_width)
+            .height(HEIGHT)
+            .fill(Color::TRANSPARENT)
+            .opacity(1.0 - flash)
+            .align_child(Center, Center)
+            .child(spaces);
+
+        children.push(Box::new(ovals));
+    }
+
+    if flash > 0.0 {
+        let badge = Rectangle::new()
+            .width(slot_width)
+            .height(HEIGHT)
+            .fill(Color::TRANSPARENT)
+            .opacity(flash)
+            .align_child(Center, Center)
+            .child(language_badge(language, theme));
+
+        children.push(Box::new(badge));
+    }
+
+    Stack::new(children).width(slot_width).height(HEIGHT)
+}
+
+fn language_badge(language: &str, theme: &Theme) -> Rectangle {
+    Rectangle::new()
+        .width(LANGUAGE_WIDTH)
+        .height(LANGUAGE_HEIGHT)
+        .radius(Full)
+        .fill(theme.accent)
+        .align_child(Center, Center)
+        .child(
+            Text::new(String::from(language))
+                .size(11.0)
+                .color(theme.bar)
+                .weight(Weight::Medium),
+        )
 }
 
 // hours above minutes, both centered on the screen
@@ -303,6 +407,61 @@ fn battery_button(battery: &Battery, theme: &Theme, open: bool) -> Rectangle {
                 .font(ICON_FONT)
                 .tight(),
         )
+}
+
+// the bell lights up in the accent color while there are unread notifications
+// and turns into a crossed bell while Do Not Disturb is on
+fn bell_button(history: &History, theme: &Theme, open: bool) -> Rectangle {
+    let muted = history.muted();
+    let unread = history.unread();
+
+    let (icon, color) = if muted {
+        (BELL_OFF, theme.muted)
+    } else if unread > 0 {
+        (BELL, theme.accent)
+    } else {
+        (BELL, theme.fg)
+    };
+
+    let face = Rectangle::new()
+        .width(BELL_WIDTH)
+        .height(24.0)
+        .align_child(Center, Center)
+        .child(
+            Text::new(icon)
+                .size(15.0)
+                .color(color)
+                .font(ICON_FONT)
+                .tight(),
+        );
+
+    let mut layers: Vec<Box<dyn Widget>> = vec![Box::new(face)];
+
+    // a tiny dot in the corner repeats what the color says
+    if unread > 0 && !muted {
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(6.0)
+                .height(6.0)
+                .radius(Full)
+                .fill(theme.accent)
+                .translate(BELL_WIDTH - 7.0, 1.0),
+        ));
+    }
+
+    Rectangle::new()
+        .width(BELL_WIDTH)
+        .height(24.0)
+        .radius(Full)
+        .fill(if open {
+            theme.surface
+        } else {
+            Color::TRANSPARENT
+        })
+        .align_child(Center, Center)
+        .cursor(Pointer)
+        .on_click(|_| toggle_history())
+        .child(Stack::new(layers).width(BELL_WIDTH).height(24.0))
 }
 
 fn wifi_icon(strength: u8) -> &'static str {

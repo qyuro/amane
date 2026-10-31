@@ -57,7 +57,8 @@ fn apply(path: Option<&str>) {
     Palette::write().open(path, 16);
 }
 
-fn current_wallpaper() -> Option<String> {
+/// The wallpaper path the palette was built from, also used as the lock backdrop.
+pub fn current_wallpaper() -> Option<String> {
     if let Ok(path) = env::var("AMANE_WALLPAPER") {
         let path = path.trim();
 
