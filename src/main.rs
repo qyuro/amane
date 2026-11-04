@@ -1,5 +1,6 @@
 mod bar;
 mod clock;
+mod desktop;
 mod history;
 mod launcher;
 mod layout;
@@ -9,6 +10,8 @@ mod panel;
 mod power;
 mod state;
 mod theme;
+mod volume;
+mod wallpapers;
 
 use amane::{App, Service};
 
@@ -53,6 +56,18 @@ fn toggle_notifications(_: &[String]) -> String {
     }
 }
 
+fn toggle_wallpapers(_: &[String]) -> String {
+    state::toggle_wallpapers();
+
+    String::from("wallpapers toggled")
+}
+
+fn toggle_volume(_: &[String]) -> String {
+    state::toggle_volume();
+
+    String::from("volume toggled")
+}
+
 fn main() {
     /*
      * start the wallpaper palette before the first frame, so the bar already
@@ -67,6 +82,7 @@ fn main() {
     drop(state::Idle::read());
     drop(layout::Layout::read());
     drop(lock::Locker::read());
+    drop(lock::LockAppear::read());
 
     // owning org.freedesktop.Notifications from the start means no early popup is lost
     drop(amane::Notifications::read());
@@ -77,13 +93,27 @@ fn main() {
     drop(amane::Battery::read());
     drop(amane::Workspaces::read());
 
+    // the desktop widget eases these, so they should be warm before its first frame
+    drop(amane::Cpu::read());
+    drop(amane::Memory::read());
+    drop(desktop::Load::read());
+
+    // the bar icon reads these, and the first volume change should be noticed
+    drop(amane::Audio::read());
+    drop(volume::Notice::read());
+    drop(wallpapers::Wallpapers::read());
+
     // the launcher's list is scanned in the background from here on
     drop(amane::Apps::read());
 
     App::new()
         .window_per_monitor(bar::view)
+        .window_per_monitor(volume::osd)
         .window(panel::wifi)
         .window(panel::power)
+        .window(wallpapers::view)
+        .window(volume::panel)
+        .window(desktop::view)
         .window(launcher::view)
         .window(notify::view)
         .window(history::view)
@@ -93,5 +123,7 @@ fn main() {
         .ipc("lock", lock_session)
         .ipc("toggle-history", toggle_history)
         .ipc("toggle-notifications", toggle_notifications)
+        .ipc("toggle-wallpapers", toggle_wallpapers)
+        .ipc("toggle-volume", toggle_volume)
         .run();
 }

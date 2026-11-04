@@ -1,13 +1,15 @@
 use amane::{
-    Battery, Canvas, Center, Color, Column, Full, Horizontal, InputArea, Layer, LayerWindow, Link,
-    Margin, Monitor, Network, Palette, Path, Pointer, Rectangle, Row, Service, Shape, Size, Stack,
-    Text, Vertical, Weight, Widget, Workspaces, Zone, request_frame,
+    Audio, Battery, Canvas, Center, Color, Column, Full, Horizontal, InputArea, Layer, LayerWindow,
+    Link, Margin, Monitor, Network, Palette, Parent, Path, Pointer, Rectangle, Row, Service, Shape,
+    Size, Stack, Text, Vertical, Weight, Widget, Workspaces, Zone, request_frame,
 };
 
 use crate::clock::Clock;
 use crate::history::History;
 use crate::layout::Layout;
-use crate::state::{toggle_history, toggle_power, toggle_wifi, touch, Ui};
+use crate::state::{
+    toggle_history, toggle_power, toggle_volume, toggle_wallpapers, toggle_wifi, touch, Ui,
+};
 use crate::theme::{with_alpha, Theme};
 
 const ICON_FONT: &str = "JetBrainsMono Nerd Font";
@@ -30,6 +32,9 @@ const CLOCK_WIDTH: f32 = 28.0;
 const BELL_WIDTH: f32 = 26.0;
 const BELL_GAP: f32 = 8.0;
 
+// the four modules at the right edge: wallpaper, volume, Wi-Fi and battery
+const BUTTON_WIDTH: f32 = 26.0;
+
 // the language chip takes the ovals' place for a moment after a switch
 const LANGUAGE_WIDTH: f32 = 30.0;
 const LANGUAGE_HEIGHT: f32 = 22.0;
@@ -48,6 +53,7 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let history = History::read();
     let network = Network::read();
     let battery = Battery::read();
+    let audio = Audio::read();
     let workspaces = Workspaces::read();
 
     // the chip holds for a moment after a switch, so it needs frames of its own
@@ -60,6 +66,8 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let spaces = workspace_row(monitor, &workspaces, &theme);
 
     let right = Row::new(vec![
+        Box::new(wallpaper_button(&theme, ui.wallpaper_open)),
+        Box::new(volume_button(&audio, &theme, ui.volume_open)),
         Box::new(wifi_button(&network, &theme, ui.wifi_open)),
         Box::new(battery_button(&battery, &theme, ui.power_open)),
     ])
@@ -118,6 +126,8 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
             .child(language_slot(
                 spaces,
                 layout.current(),
+                layout.previous(),
+                layout.label_mix(),
                 flash,
                 slot_width,
                 &theme,
@@ -241,6 +251,8 @@ fn fixed_width(widget: &impl Widget) -> f32 {
 fn language_slot(
     spaces: Row,
     language: &str,
+    previous: &str,
+    label_mix: f32,
     flash: f32,
     slot_width: f32,
     theme: &Theme,
@@ -254,6 +266,8 @@ fn language_slot(
             .height(HEIGHT)
             .fill(Color::TRANSPARENT)
             .opacity(1.0 - flash)
+            // a tiny shrink makes the ovals retreat instead of just fading
+            .scale(1.0 - 0.06 * flash)
             .align_child(Center, Center)
             .child(spaces);
 
@@ -267,7 +281,7 @@ fn language_slot(
             .fill(Color::TRANSPARENT)
             .opacity(flash)
             .align_child(Center, Center)
-            .child(language_badge(language, theme));
+            .child(language_badge(language, previous, label_mix, flash, theme));
 
         children.push(Box::new(badge));
     }
@@ -275,19 +289,49 @@ fn language_slot(
     Stack::new(children).width(slot_width).height(HEIGHT)
 }
 
-fn language_badge(language: &str, theme: &Theme) -> Rectangle {
+fn language_badge(
+    language: &str,
+    previous: &str,
+    label_mix: f32,
+    flash: f32,
+    theme: &Theme,
+) -> Rectangle {
+    let label = |text: &str, opacity: f32| -> Box<dyn Widget> {
+        Box::new(
+            Rectangle::new()
+                .width(Parent)
+                .height(Parent)
+                .fill(Color::TRANSPARENT)
+                .opacity(opacity)
+                .align_child(Center, Center)
+                .child(
+                    Text::new(String::from(text))
+                        .size(11.0)
+                        .color(theme.bar)
+                        .weight(Weight::Medium),
+                ),
+        )
+    };
+
+    // the new code sits underneath and the old one fades away on top, so a
+    // switch inside the chip is a crossfade rather than a jump
+    let mut labels: Vec<Box<dyn Widget>> = vec![label(language, 1.0)];
+
+    if !previous.is_empty() && label_mix < 1.0 {
+        labels.push(label(previous, 1.0 - label_mix));
+    }
+
+    let contents = Stack::new(labels).width(Parent).height(Parent);
+
     Rectangle::new()
         .width(LANGUAGE_WIDTH)
         .height(LANGUAGE_HEIGHT)
         .radius(Full)
         .fill(theme.accent)
+        .scale(0.82 + 0.18 * flash)
+        .translate(0.0, (1.0 - flash) * 3.0)
         .align_child(Center, Center)
-        .child(
-            Text::new(String::from(language))
-                .size(11.0)
-                .color(theme.bar)
-                .weight(Weight::Medium),
-        )
+        .child(contents)
 }
 
 // hours above minutes, both centered on the screen
@@ -347,6 +391,76 @@ fn workspace_row(monitor: &Monitor, workspaces: &Workspaces, theme: &Theme) -> R
     Row::new(buttons).gap(5.0).align(Center)
 }
 
+fn wallpaper_button(theme: &Theme, open: bool) -> Rectangle {
+    Rectangle::new()
+        .width(BUTTON_WIDTH)
+        .height(24.0)
+        .radius(Full)
+        .fill(if open {
+            theme.surface
+        } else {
+            Color::TRANSPARENT
+        })
+        .align_child(Center, Center)
+        .cursor(Pointer)
+        .on_click(|_| toggle_wallpapers())
+        .child(
+            Text::new("\u{f03e}")
+                .size(15.0)
+                .color(if open { theme.accent } else { theme.fg })
+                .font(ICON_FONT)
+                .tight(),
+        )
+}
+
+fn volume_button(audio: &Audio, theme: &Theme, open: bool) -> Rectangle {
+    let volume = audio.volume();
+    let muted = audio.muted();
+
+    let color = if muted {
+        theme.muted
+    } else if open {
+        theme.accent
+    } else {
+        theme.fg
+    };
+
+    Rectangle::new()
+        .width(BUTTON_WIDTH)
+        .height(24.0)
+        .radius(Full)
+        .fill(if open {
+            theme.surface
+        } else {
+            Color::TRANSPARENT
+        })
+        .align_child(Center, Center)
+        .cursor(Pointer)
+        .on_click(|_| toggle_volume())
+        .on_scroll(move |scroll| {
+            let delta = if scroll.y > 0.0 {
+                -4
+            } else if scroll.y < 0.0 {
+                4
+            } else if scroll.x > 0.0 {
+                -4
+            } else if scroll.x < 0.0 {
+                4
+            } else {
+                return;
+            };
+
+            crate::volume::nudge(delta, volume, muted);
+        })
+        .child(
+            Text::new(crate::volume::icon(volume, muted))
+                .size(15.0)
+                .color(color)
+                .font(ICON_FONT)
+                .tight(),
+        )
+}
+
 fn wifi_button(network: &Network, theme: &Theme, open: bool) -> Rectangle {
     let (icon, color) = match network.link() {
         Link::Wifi => (wifi_icon(network.strength()), theme.accent),
@@ -356,7 +470,7 @@ fn wifi_button(network: &Network, theme: &Theme, open: bool) -> Rectangle {
     };
 
     Rectangle::new()
-        .width(26.0)
+        .width(BUTTON_WIDTH)
         .height(24.0)
         .radius(Full)
         .fill(if open {
@@ -389,7 +503,7 @@ fn battery_button(battery: &Battery, theme: &Theme, open: bool) -> Rectangle {
     };
 
     Rectangle::new()
-        .width(26.0)
+        .width(BUTTON_WIDTH)
         .height(24.0)
         .radius(Full)
         .fill(if open {

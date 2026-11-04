@@ -18,6 +18,13 @@ pub struct Ui {
     /// the notification history panel
     pub history_open: bool,
 
+    /// the wallpaper picker and the volume panel
+    pub wallpaper_open: bool,
+    pub volume_open: bool,
+
+    /// the page of wallpaper thumbnails the picker shows
+    pub wallpaper_page: usize,
+
     pub launcher_open: bool,
     pub launcher_query: String,
     pub launcher_selected: usize,
@@ -32,6 +39,8 @@ pub struct Ui {
     pub wifi: Animation<f32>,
     pub power: Animation<f32>,
     pub history: Animation<f32>,
+    pub wallpaper: Animation<f32>,
+    pub volume: Animation<f32>,
 
     /// the last click, key or toggle, so the bar can fold itself away
     pub last_activity: Instant,
@@ -50,6 +59,9 @@ impl Service for Ui {
             power_open: false,
             bar_minimal: false,
             history_open: false,
+            wallpaper_open: false,
+            volume_open: false,
+            wallpaper_page: 0,
             launcher_open: false,
             launcher_query: String::new(),
             launcher_selected: 0,
@@ -63,6 +75,8 @@ impl Service for Ui {
             wifi: overlay(),
             power: overlay(),
             history: overlay(),
+            wallpaper: overlay(),
+            volume: overlay(),
 
             last_activity: Instant::now(),
         }
@@ -94,6 +108,8 @@ impl Service for Idle {
                 && !ui.wifi_open
                 && !ui.power_open
                 && !ui.history_open
+                && !ui.wallpaper_open
+                && !ui.volume_open
                 && !ui.launcher_open
                 && ui.last_activity.elapsed() >= IDLE_TIMEOUT
         };
@@ -125,6 +141,12 @@ pub fn toggle_wifi() {
 
         ui.history_open = false;
         ui.history.to(0.0);
+
+        ui.wallpaper_open = false;
+        ui.wallpaper.to(0.0);
+
+        ui.volume_open = false;
+        ui.volume.to(0.0);
 
         ui.launcher_open = false;
         ui.launcher.to(0.0);
@@ -158,6 +180,12 @@ pub fn toggle_power() {
 
     ui.history_open = false;
     ui.history.to(0.0);
+
+    ui.wallpaper_open = false;
+    ui.wallpaper.to(0.0);
+
+    ui.volume_open = false;
+    ui.volume.to(0.0);
 
     ui.launcher_open = false;
     ui.launcher.to(0.0);
@@ -208,6 +236,12 @@ pub fn toggle_history() {
             ui.power_open = false;
             ui.power.to(0.0);
 
+            ui.wallpaper_open = false;
+            ui.wallpaper.to(0.0);
+
+            ui.volume_open = false;
+            ui.volume.to(0.0);
+
             ui.launcher_open = false;
             ui.launcher.to(0.0);
 
@@ -254,6 +288,12 @@ pub fn toggle_bar() {
             ui.history_open = false;
             ui.history.to(0.0);
 
+            ui.wallpaper_open = false;
+            ui.wallpaper.to(0.0);
+
+            ui.volume_open = false;
+            ui.volume.to(0.0);
+
             ui.launcher_open = false;
             ui.launcher.to(0.0);
 
@@ -283,6 +323,12 @@ fn collapse_bar() {
 
     ui.history_open = false;
     ui.history.to(0.0);
+
+    ui.wallpaper_open = false;
+    ui.wallpaper.to(0.0);
+
+    ui.volume_open = false;
+    ui.volume.to(0.0);
 
     ui.launcher_open = false;
     ui.launcher.to(0.0);
@@ -318,6 +364,12 @@ pub fn toggle_launcher() {
             ui.history_open = false;
             ui.history.to(0.0);
 
+            ui.wallpaper_open = false;
+            ui.wallpaper.to(0.0);
+
+            ui.volume_open = false;
+            ui.volume.to(0.0);
+
             ui.selected.clear();
         }
 
@@ -342,4 +394,108 @@ pub fn close_launcher() {
 
 pub fn forget_password() {
     TextInput::set_text("wifi-password", "");
+}
+
+// the picture icon in the bar, and `amane ipc call toggle-wallpapers`
+pub fn toggle_wallpapers() {
+    let opening = {
+        let mut ui = Ui::write();
+
+        let opening = !ui.wallpaper_open;
+        ui.wallpaper_open = opening;
+        ui.wallpaper.to(if opening { 1.0 } else { 0.0 });
+        ui.last_activity = Instant::now();
+
+        if opening {
+            ui.wifi_open = false;
+            ui.wifi.to(0.0);
+
+            ui.power_open = false;
+            ui.power.to(0.0);
+
+            ui.history_open = false;
+            ui.history.to(0.0);
+
+            ui.volume_open = false;
+            ui.volume.to(0.0);
+
+            ui.launcher_open = false;
+            ui.launcher.to(0.0);
+
+            ui.selected.clear();
+        }
+
+        opening
+    };
+
+    if opening {
+        forget_password();
+    }
+}
+
+pub fn close_wallpapers() {
+    let mut ui = Ui::write();
+
+    ui.wallpaper_open = false;
+    ui.wallpaper.to(0.0);
+    ui.last_activity = Instant::now();
+}
+
+pub fn set_wallpaper_page(page: usize) {
+    let mut ui = Ui::write();
+
+    ui.wallpaper_page = page;
+    ui.last_activity = Instant::now();
+}
+
+// the speaker icon in the bar, and `amane ipc call toggle-volume`
+pub fn toggle_volume() {
+    let opening = {
+        let mut ui = Ui::write();
+
+        let opening = !ui.volume_open;
+        ui.volume_open = opening;
+        ui.volume.to(if opening { 1.0 } else { 0.0 });
+        ui.last_activity = Instant::now();
+
+        if opening {
+            ui.wifi_open = false;
+            ui.wifi.to(0.0);
+
+            ui.power_open = false;
+            ui.power.to(0.0);
+
+            ui.history_open = false;
+            ui.history.to(0.0);
+
+            ui.wallpaper_open = false;
+            ui.wallpaper.to(0.0);
+
+            ui.launcher_open = false;
+            ui.launcher.to(0.0);
+
+            ui.selected.clear();
+        }
+
+        opening
+    };
+
+    // the panel shows the level itself, so the bar-wide notice only gets in the way
+    crate::volume::hide();
+
+    if opening {
+        forget_password();
+    }
+}
+
+pub fn close_volume() {
+    let mut ui = Ui::write();
+
+    ui.volume_open = false;
+    ui.volume.to(0.0);
+    ui.last_activity = Instant::now();
+
+    drop(ui);
+
+    crate::volume::hide();
 }

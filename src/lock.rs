@@ -7,8 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{
-    output, Center, Color, Column, Full, Image, Key, Keyboard, Layer, LayerWindow, Lock, Monitor,
-    Palette, Parent, Padding, Rectangle, Service, Stack, Text, TextInput, Weight, Widget, Zone,
+    output, Animation, Center, Color, Column, Easing, Full, Image, Key, Keyboard, Layer,
+    LayerWindow, Lock, Monitor, Palette, Parent, Padding, Rectangle, Service, Stack, Text,
+    TextInput, Weight, Widget, Zone,
 };
 
 use crate::clock::Clock;
@@ -91,6 +92,61 @@ impl Locker {
     }
 }
 
+/*
+ * The lock screen's reveal plays the first time its view runs after a lock,
+ * not when the compositor was asked, so it stays smooth even if the compositor
+ * takes a moment to put the lock surfaces up.
+ */
+pub struct LockAppear {
+    reveal: Animation<f32>,
+    started: bool,
+}
+
+impl Service for LockAppear {
+    fn new() -> Self {
+        Self {
+            reveal: fade(),
+            started: false,
+        }
+    }
+
+    fn listen() {}
+}
+
+impl LockAppear {
+    /*
+     * The next lock screen starts hidden and eases in again. A repeated idle
+     * request while the screen is already up must not restart it, so only a
+     * fresh lock or one after a successful unlock resets the reveal.
+     */
+    fn reset(unlocked: bool) {
+        let mut appear = LockAppear::write();
+
+        if unlocked || !appear.started {
+            appear.reveal = fade();
+            appear.started = false;
+        }
+    }
+
+    // read once per lock view; asking for the first value also starts the reveal
+    fn value() -> f32 {
+        let mut appear = LockAppear::write();
+
+        if !appear.started {
+            appear.started = true;
+            appear.reveal.to(1.0);
+        }
+
+        appear.reveal.value()
+    }
+}
+
+fn fade() -> Animation<f32> {
+    Animation::new(0.0)
+        .duration(Duration::from_millis(420))
+        .easing(Easing::Out)
+}
+
 /// Locks the session now, from idle, the ipc call or a hotkey.
 pub fn lock_now() {
     let date = read_date();
@@ -101,6 +157,11 @@ pub fn lock_now() {
         *locker.last.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
         locker.date = date;
     }
+
+    // read before touching LockAppear: a view reads Lock first and then LockAppear
+    let unlocked = Lock::read().unlocked();
+
+    LockAppear::reset(unlocked);
 
     Lock::start();
 }
@@ -114,31 +175,33 @@ pub fn view(_monitor: &Monitor) -> LayerWindow {
     let locker = Locker::read();
     let lock = Lock::read();
 
+    let reveal = LockAppear::value();
+
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
 
-    let background = match crate::theme::current_wallpaper() {
-        // a small copy, blurred once, so the backdrop costs nothing per frame
-        Some(path) => Rectangle::new()
+    /*
+     * The first frame is committed before the wallpaper has decoded, and the
+     * compositor paints its red locked background behind a transparent surface.
+     * An opaque base underneath everything keeps that red from ever showing.
+     */
+    let base = palette.background();
+
+    layers.push(Box::new(
+        Rectangle::new()
             .width(Parent)
             .height(Parent)
-            .fill(Image::cover(path).thumbnail(480, 300).blurred(18)),
+            .fill(Color::rgb(base.red(), base.green(), base.blue())),
+    ));
 
-        // the palette itself when there is no wallpaper to show
-        None => {
-            let background = palette.background();
-
+    // a small copy, blurred once, so the backdrop costs nothing per frame
+    if let Some(path) = crate::theme::current_wallpaper() {
+        layers.push(Box::new(
             Rectangle::new()
                 .width(Parent)
                 .height(Parent)
-                .fill(Color::rgb(
-                    background.red(),
-                    background.green(),
-                    background.blue(),
-                ))
-        }
-    };
-
-    layers.push(Box::new(background));
+                .fill(Image::cover(path).thumbnail(480, 300).blurred(18)),
+        ));
+    }
 
     // darkens the wallpaper enough for the clock and the field to stay readable
     layers.push(Box::new(
@@ -215,6 +278,10 @@ pub fn view(_monitor: &Monitor) -> LayerWindow {
             .height(Parent)
             .fill(Color::TRANSPARENT)
             .align_child(Center, Center)
+            // the clock and the field rise into place instead of popping in
+            .scale(0.96 + 0.04 * reveal)
+            .translate(0.0, (1.0 - reveal) * 18.0)
+            .opacity(reveal)
             .child(content),
     ));
 

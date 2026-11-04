@@ -10,9 +10,12 @@ use amane::Service;
 const EVENT_STREAM: &str = "\"EventStream\"\n";
 
 // the language chip stays up for about this long after a switch
-const FLASH: Duration = Duration::from_millis(1800);
-const FADE_IN: Duration = Duration::from_millis(90);
-const FADE_OUT: Duration = Duration::from_millis(220);
+const FLASH: Duration = Duration::from_millis(2200);
+const FADE_IN: Duration = Duration::from_millis(180);
+const FADE_OUT: Duration = Duration::from_millis(320);
+
+// the old code fades into the new one inside the chip
+const LABEL_FADE: Duration = Duration::from_millis(160);
 
 /// Tracks niri's current keyboard layout and remembers when it last changed.
 pub struct Layout {
@@ -21,6 +24,15 @@ pub struct Layout {
     index: usize,
     current: String,
 
+    // the code shown just before the current one, for a smooth label change
+    previous: String,
+
+    // when the chip first appeared and when it may start fading out; a switch
+    // while it is up extends the hold instead of blinking it off and on
+    shown_at: Option<Instant>,
+    hold_until: Option<Instant>,
+
+    // when the code last changed, for the crossfade inside the chip
     changed_at: Option<Instant>,
 }
 
@@ -31,6 +43,9 @@ impl Service for Layout {
             codes: config_codes(),
             index: 0,
             current: String::new(),
+            previous: String::new(),
+            shown_at: None,
+            hold_until: None,
             changed_at: None,
         }
     }
@@ -92,8 +107,17 @@ impl Service for Layout {
                             layout.index = index;
                         }
 
+                        let now = Instant::now();
+
+                        layout.previous = std::mem::take(&mut layout.current);
                         layout.current = code_for(&layout.names, layout.index, &layout.codes);
-                        layout.changed_at = Some(Instant::now());
+
+                        if !layout.hold_until.is_some_and(|until| until > now) {
+                            layout.shown_at = Some(now);
+                        }
+
+                        layout.hold_until = Some(now + FLASH);
+                        layout.changed_at = Some(now);
 
                         true
                     };
@@ -115,26 +139,51 @@ impl Layout {
         &self.current
     }
 
+    /// The code shown before the current one, empty until the first switch.
+    pub fn previous(&self) -> &str {
+        &self.previous
+    }
+
+    /// 0 right at a switch, 1 once the new code has taken over the chip.
+    pub fn label_mix(&self) -> f32 {
+        if self.previous.is_empty() {
+            return 1.0;
+        }
+
+        let Some(start) = self.changed_at else {
+            return 1.0;
+        };
+
+        smoothstep((start.elapsed().as_secs_f32() / LABEL_FADE.as_secs_f32()).min(1.0))
+    }
+
     /// True while the language chip is replacing the workspaces.
     pub fn flash_active(&self) -> bool {
-        self.changed_at
-            .is_some_and(|start| start.elapsed() < FLASH)
+        self.hold_until
+            .is_some_and(|until| until > Instant::now())
     }
 
     /// 0 before and after the flash, 1 while it holds, with short fades.
     pub fn flash_mix(&self) -> f32 {
-        let Some(start) = self.changed_at else {
+        let Some(start) = self.shown_at else {
             return 0.0;
         };
 
-        let elapsed = start.elapsed();
+        let Some(until) = self.hold_until else {
+            return 0.0;
+        };
 
-        if elapsed >= FLASH {
+        let now = Instant::now();
+
+        if now >= until {
             return 0.0;
         }
 
+        let elapsed = now.duration_since(start);
+        let remaining = until.duration_since(now);
+
         let fade_in = (elapsed.as_secs_f32() / FADE_IN.as_secs_f32()).min(1.0);
-        let fade_out = ((FLASH - elapsed).as_secs_f32() / FADE_OUT.as_secs_f32()).min(1.0);
+        let fade_out = (remaining.as_secs_f32() / FADE_OUT.as_secs_f32()).min(1.0);
 
         smoothstep(fade_in.min(fade_out))
     }
