@@ -244,7 +244,7 @@ pub fn view() -> LayerWindow {
         .width(Parent)
         .height(Parent)
         .radius(18.0)
-        .fill(theme.panel)
+        .fill(Color::BLACK)
         .border(1.0, theme.border)
         .padding(16.0)
         .opacity(fade)

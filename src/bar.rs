@@ -111,7 +111,7 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
             .height(HEIGHT)
             .fill(Color::TRANSPARENT)
             .translate(pill_left, 0.0)
-            .child(pill_shape(pill_width, &theme)),
+            .child(pill_shape(pill_width)),
     ));
 
     // the ovals stay at the body's left padding; in the minimal pill that is
@@ -212,7 +212,7 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
  * outwards into that edge; the flush top and the bent corners are what make
  * it look like the bar grows out of the screen instead of lying under it
  */
-fn pill_shape(width: f32, theme: &Theme) -> Canvas {
+fn pill_shape(width: f32) -> Canvas {
     // a tiny pill would otherwise have its bottom corners cross each other
     let bottom = BOTTOM
         .min((width - FLARE * 2.0) / 2.0)
@@ -228,7 +228,7 @@ fn pill_shape(width: f32, theme: &Theme) -> Canvas {
         .line_to(width - FLARE, FLARE)
         .arc(width, FLARE, FLARE, 270.0, 90.0)
         .close()
-        .fill(theme.bar);
+        .fill(Color::BLACK);
 
     Canvas::new()
         .width(width)

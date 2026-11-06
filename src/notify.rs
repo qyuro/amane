@@ -139,7 +139,7 @@ fn card(notification: &Notification, theme: &Theme) -> Rectangle {
         .width(Parent)
         .height(CARD_HEIGHT)
         .radius(14.0)
-        .fill(theme.panel)
+        .fill(Color::BLACK)
         .border(1.0, theme.border)
         .padding(Padding {
             left: 14.0,

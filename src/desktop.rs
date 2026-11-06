@@ -1,30 +1,29 @@
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use amane::{
-    Center, Color, Column, End, Horizontal, Layer, LayerWindow, Margin, Palette, Parent, Rectangle,
-    Row, Service, Start, Text, Vertical, Weight, Widget, Zone,
+    Center, Color, Column, Horizontal, Layer, LayerWindow, Margin, Parent, Rectangle, Row, Service,
+    Text, Vertical, Weight, Widget, Zone,
 };
 
-use crate::theme::{with_alpha, Theme};
-
-const WIDTH: f32 = 240.0;
-const PADDING: f32 = 14.0;
-const ROW_HEIGHT: f32 = 18.0;
-const GAP: f32 = 7.0;
-const HEIGHT: f32 = PADDING * 2.0 + ROW_HEIGHT * 5.0 + GAP * 4.0;
-
-const LABEL_WIDTH: f32 = 32.0;
-const VALUE_WIDTH: f32 = 62.0;
-const BAR_WIDTH: f32 = WIDTH - PADDING * 2.0 - LABEL_WIDTH - VALUE_WIDTH - GAP * 2.0;
-
-// bars for the network fill up at a 100 Mbit link, the usual ceiling at home
-const NET_FULL: f32 = 12_500_000.0;
+const WIDTH: f32 = 190.0;
+const ROW_HEIGHT: f32 = 16.0;
+const GAP: f32 = 6.0;
+const METERS: f32 = 7.0;
+const HEIGHT: f32 = ROW_HEIGHT * METERS + GAP * (METERS - 1.0);
 
 const POLL: Duration = Duration::from_millis(50);
 const NET_SAMPLE: Duration = Duration::from_millis(500);
 const DISK_SAMPLE: Duration = Duration::from_secs(5);
+const GPU_SAMPLE: Duration = Duration::from_secs(1);
+
+// where the widget sits, in widget units
+const WIDGET_X: f32 = 18.0;
+const WIDGET_Y: f32 = 46.0;
+
+const GIB: f32 = 1024.0 * 1024.0 * 1024.0;
 
 /// Network throughput, disk use, and eased copies of the CPU and memory loads
 /// for the desktop widget.
@@ -32,43 +31,58 @@ pub struct Load {
     cpu: f32,
     memory: f32,
     disk: f32,
+    gpu: f32,
+    gpu_memory: f32,
 
     down: f32,
     up: f32,
 
     disk_used: u64,
     disk_total: u64,
+    gpu_used: u64,
+    gpu_total: u64,
 
     interface: String,
     rx: u64,
     tx: u64,
     sampled: Instant,
     disk_sampled: Instant,
+    gpu_sampled: Instant,
 
     target_down: f32,
     target_up: f32,
+    target_gpu: f32,
+    target_gpu_memory: f32,
 }
 
 impl Service for Load {
     fn new() -> Self {
         let (interface, rx, tx) = network().unwrap_or_default();
         let (disk_used, disk_total) = disk();
+        let gpu = gpu().unwrap_or_default();
 
         Self {
             cpu: 0.0,
             memory: 0.0,
             disk: percent(disk_used, disk_total),
+            gpu: f32::from(gpu.busy),
+            gpu_memory: percent(gpu.used, gpu.total),
             down: 0.0,
             up: 0.0,
             disk_used,
             disk_total,
+            gpu_used: gpu.used,
+            gpu_total: gpu.total,
             interface,
             rx,
             tx,
             sampled: Instant::now(),
             disk_sampled: Instant::now(),
+            gpu_sampled: Instant::now(),
             target_down: 0.0,
             target_up: 0.0,
+            target_gpu: f32::from(gpu.busy),
+            target_gpu_memory: percent(gpu.used, gpu.total),
         }
     }
 
@@ -77,7 +91,17 @@ impl Service for Load {
     }
 
     fn update(&mut self) -> bool {
-        let before = (self.cpu, self.memory, self.disk, self.down, self.up, self.disk_used);
+        let before = (
+            self.cpu,
+            self.memory,
+            self.disk,
+            self.gpu,
+            self.gpu_memory,
+            self.down,
+            self.up,
+            self.disk_used,
+            self.gpu_used,
+        );
 
         self.cpu = ease(self.cpu, f32::from(amane::Cpu::read().percent()));
         self.memory = ease(self.memory, f32::from(amane::Memory::read().percent()));
@@ -119,7 +143,35 @@ impl Service for Load {
 
         self.disk = ease(self.disk, percent(self.disk_used, self.disk_total));
 
-        (self.cpu, self.memory, self.disk, self.down, self.up, self.disk_used) != before
+        if self.gpu_sampled.elapsed() >= GPU_SAMPLE {
+            if let Some(gpu) = gpu() {
+                self.gpu_used = gpu.used;
+                self.gpu_total = gpu.total;
+                self.target_gpu = f32::from(gpu.busy);
+                self.target_gpu_memory = percent(gpu.used, gpu.total);
+            }
+
+            self.gpu_sampled = Instant::now();
+        }
+
+        self.gpu = ease(self.gpu, self.target_gpu);
+        self.gpu_memory = ease(self.gpu_memory, self.target_gpu_memory);
+
+        let changed = (
+            self.cpu,
+            self.memory,
+            self.disk,
+            self.gpu,
+            self.gpu_memory,
+            self.down,
+            self.up,
+            self.disk_used,
+            self.gpu_used,
+        ) != before;
+
+
+
+        changed
     }
 }
 
@@ -136,6 +188,24 @@ impl Load {
         self.disk
     }
 
+    pub fn gpu(&self) -> f32 {
+        self.gpu
+    }
+
+    pub fn gpu_memory(&self) -> f32 {
+        self.gpu_memory
+    }
+
+    pub fn gpu_used(&self) -> u64 {
+        self.gpu_used
+    }
+
+    pub fn gpu_total(&self) -> u64 {
+        self.gpu_total
+    }
+
+
+
     pub fn down(&self) -> f32 {
         self.down
     }
@@ -143,116 +213,132 @@ impl Load {
     pub fn up(&self) -> f32 {
         self.up
     }
-
-    pub fn down_percent(&self) -> f32 {
-        (self.down / NET_FULL * 100.0).clamp(0.0, 100.0)
-    }
-
-    pub fn up_percent(&self) -> f32 {
-        (self.up / NET_FULL * 100.0).clamp(0.0, 100.0)
-    }
 }
 
-/// The desktop load widget, drawn under normal windows by the same renderer.
+/// The desktop load widget: plain white readings, no panel behind them.
 pub fn view() -> LayerWindow {
-    let palette = Palette::read();
-    let theme = Theme::from(&palette);
     let load = Load::read();
 
+    let vram = if load.gpu_total() > 0 {
+        format!(
+            "{:.1}/{:.1}G",
+            load.gpu_used() as f32 / GIB,
+            load.gpu_total() as f32 / GIB
+        )
+    } else {
+        format!("{:.0}%", load.gpu_memory())
+    };
+
     let rows: Vec<Box<dyn Widget>> = vec![
-        Box::new(meter("ЦП", load.cpu(), format!("{:.0}%", load.cpu()), &theme, 255)),
-        Box::new(meter("ОЗУ", load.memory(), format!("{:.0}%", load.memory()), &theme, 255)),
-        Box::new(meter("ДИСК", load.disk(), format!("{:.0}%", load.disk()), &theme, 255)),
-        Box::new(meter("↓", load.down_percent(), rate(load.down()), &theme, 255)),
-        Box::new(meter("↑", load.up_percent(), rate(load.up()), &theme, 140)),
+        Box::new(row("ЦП", format!("{:.0}%", load.cpu()))),
+        Box::new(row("ОЗУ", format!("{:.0}%", load.memory()))),
+        Box::new(row("ДИСК", format!("{:.0}%", load.disk()))),
+        Box::new(row("↓", rate(load.down()))),
+        Box::new(row("↑", rate(load.up()))),
+        Box::new(row("GPU", format!("{:.0}%", load.gpu()))),
+        Box::new(row("VRAM", vram)),
     ];
 
     let body = Column::new(rows).width(Parent).gap(GAP);
 
-    let root = Rectangle::new()
-        .width(Parent)
-        .height(Parent)
-        .radius(14.0)
-        .fill(theme.panel)
-        .border(1.0, theme.border)
-        .padding(amane::Padding {
-            left: PADDING,
-            right: PADDING,
-            top: PADDING,
-            bottom: PADDING,
-        })
-        .child(body);
-
     LayerWindow::new()
         .width(WIDTH)
         .height(HEIGHT)
-        .anchor_vertical(Vertical::Bottom)
-        .anchor_horizontal(Horizontal::Right)
+        .anchor_vertical(Vertical::Top)
+        .anchor_horizontal(Horizontal::Left)
         .margin(Margin {
-            top: 0,
-            right: 18,
-            bottom: 18,
-            left: 0,
+            top: WIDGET_Y as i32,
+            right: 0,
+            bottom: 0,
+            left: WIDGET_X as i32,
         })
-        // the backdrop rule in niri keeps this one surface shared by every
-        // workspace, the same way the wallpaper is
         .layer(Layer::Background)
         .space(Zone::Ignore)
         .click_through()
         .namespace("amane-desktop")
-        .child(root)
+        .child(body)
 }
 
-fn meter(label: &'static str, percent: f32, value: String, theme: &Theme, alpha: u8) -> Row {
-    let fill = with_alpha(theme.accent, alpha);
-
-    let bar = Rectangle::new()
-        .width(BAR_WIDTH)
-        .height(4.0)
-        .radius(amane::Full)
-        .fill(with_alpha(theme.fg, 22))
-        .align_child(Start, Center)
-        .clip();
-
-    let bar = if percent > 0.5 {
-        bar.child(
-            Rectangle::new()
-                .width((BAR_WIDTH * percent / 100.0).max(2.0))
-                .height(4.0)
-                .radius(amane::Full)
-                .fill(fill),
-        )
-    } else {
-        bar
-    };
-
-    Row::new(vec![
-        Box::new(
-            Rectangle::new()
-                .width(LABEL_WIDTH)
-                .height(ROW_HEIGHT)
-                .fill(Color::TRANSPARENT)
-                .align_child(Start, Center)
-                .child(Text::new(label).size(10.5).color(theme.muted).tight()),
-        ) as Box<dyn Widget>,
-        Box::new(bar),
-        Box::new(
-            Rectangle::new()
-                .width(VALUE_WIDTH)
-                .height(ROW_HEIGHT)
-                .fill(Color::TRANSPARENT)
-                .align_child(End, Center)
-                .child(
+fn row(label: &'static str, value: String) -> Rectangle {
+    Rectangle::new()
+        .width(Parent)
+        .height(ROW_HEIGHT)
+        .fill(Color::TRANSPARENT)
+        .align_child(Center, Center)
+        .child(
+            Row::new(vec![
+                Box::new(
+                    Text::new(label)
+                        .size(10.5)
+                        .color(Color::rgba(255, 255, 255, 170))
+                        .tight(),
+                ) as Box<dyn Widget>,
+                Box::new(
+                    Rectangle::new()
+                        .width(Parent)
+                        .height(1.0)
+                        .fill(Color::TRANSPARENT),
+                ),
+                Box::new(
                     Text::new(value)
                         .size(10.5)
-                        .color(theme.fg)
+                        .color(Color::WHITE)
                         .weight(Weight::Medium),
                 ),
-        ),
-    ])
-    .width(Parent)
-    .gap(GAP)
-    .align(Center)
+            ])
+            .width(Parent)
+            .gap(10.0)
+            .align(Center),
+        )
+}
+
+#[derive(Default)]
+struct Gpu {
+    busy: u8,
+    used: u64,
+    total: u64,
+}
+
+// the amdgpu driver exposes load and VRAM in sysfs; the first card with those
+// files is the one driving the display
+fn gpu() -> Option<Gpu> {
+    let entries = fs::read_dir("/sys/class/drm").ok()?;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+
+        let device = entry.path().join("device");
+
+        let Some(busy) = read_number(&device.join("gpu_busy_percent")) else {
+            continue;
+        };
+
+        let mut total = read_number(&device.join("mem_info_vram_total")).unwrap_or(0);
+        let mut used = read_number(&device.join("mem_info_vram_used")).unwrap_or(0);
+
+        // integrated cards report their memory through GTT instead
+        if total == 0 {
+            total = read_number(&device.join("mem_info_gtt_total")).unwrap_or(0);
+            used = read_number(&device.join("mem_info_gtt_used")).unwrap_or(0);
+        }
+
+        return Some(Gpu {
+            busy: busy.min(100) as u8,
+            used,
+            total,
+        });
+    }
+
+    None
+}
+
+fn read_number(path: &Path) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
 }
 
 // the default route picks the interface, so a VPN or ethernet is measured

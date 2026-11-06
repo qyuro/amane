@@ -128,7 +128,6 @@ fn from_awww_query() -> Option<String> {
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub bar: Color,
-    pub panel: Color,
     pub fg: Color,
     pub muted: Color,
     pub accent: Color,
@@ -145,7 +144,6 @@ impl Theme {
 
         Self {
             bar: with_alpha(background, 226),
-            panel: with_alpha(background, 246),
             fg: foreground,
             muted: with_alpha(foreground, 155),
             accent,

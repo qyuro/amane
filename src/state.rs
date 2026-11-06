@@ -25,6 +25,9 @@ pub struct Ui {
     /// the page of wallpaper thumbnails the picker shows
     pub wallpaper_page: usize,
 
+    /// what the wallpaper search box holds
+    pub wallpaper_query: String,
+
     pub launcher_open: bool,
     pub launcher_query: String,
     pub launcher_selected: usize,
@@ -62,6 +65,7 @@ impl Service for Ui {
             wallpaper_open: false,
             volume_open: false,
             wallpaper_page: 0,
+            wallpaper_query: String::new(),
             launcher_open: false,
             launcher_query: String::new(),
             launcher_selected: 0,
@@ -423,6 +427,10 @@ pub fn toggle_wallpapers() {
             ui.launcher.to(0.0);
 
             ui.selected.clear();
+
+            // a fresh search every time the picker opens
+            ui.wallpaper_page = 0;
+            ui.wallpaper_query.clear();
         }
 
         opening
@@ -430,6 +438,7 @@ pub fn toggle_wallpapers() {
 
     if opening {
         forget_password();
+        TextInput::set_text("wallpaper-search", "");
     }
 }
 

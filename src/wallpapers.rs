@@ -9,8 +9,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use amane::{
     Button, Center, Color, Column, Horizontal, Image, Key, Keyboard, Layer, LayerWindow, Margin,
-    Palette, Parent, Padding, Pointer, Rectangle, Row, Service, Start, Text, Vertical, Weight,
-    Widget, Zone,
+    Palette, Parent, Padding, Pointer, Rectangle, Row, Service, Start, Text, TextInput, Vertical,
+    Weight, Widget, Zone,
 };
 
 use crate::state::{close_wallpapers, set_wallpaper_page, Ui};
@@ -19,8 +19,9 @@ use crate::theme::{with_alpha, Theme};
 const ICON_FONT: &str = "JetBrainsMono Nerd Font";
 
 const WIDTH: f32 = 460.0;
-const HEIGHT: f32 = 410.0;
+const HEIGHT: f32 = 456.0;
 const PADDING: f32 = 16.0;
+const SEARCH_HEIGHT: f32 = 36.0;
 
 // three wallpapers a row and three rows a page; the pages keep the thumbnails
 // big enough to recognise the picture before clicking it
@@ -32,6 +33,8 @@ const CARD_WIDTH: f32 = 132.0;
 const CARD_HEIGHT: f32 = 94.0;
 const PREVIEW_HEIGHT: f32 = 70.0;
 const GRID_GAP: f32 = 10.0;
+
+const GRID_HEIGHT: f32 = ROWS as f32 * CARD_HEIGHT + (ROWS as f32 - 1.0) * GRID_GAP;
 
 const THUMB_WIDTH: u32 = 320;
 const THUMB_HEIGHT: u32 = 180;
@@ -135,8 +138,8 @@ impl Wallpapers {
     }
 
     // starts making the missing thumbnails of the page on screen
-    fn ensure_page(&self, page: usize) {
-        for wallpaper in self.entries.iter().skip(page * PAGE).take(PAGE) {
+    fn ensure_page(&self, entries: &[&Wallpaper]) {
+        for wallpaper in entries {
             if wallpaper.thumb.exists() {
                 continue;
             }
@@ -335,64 +338,94 @@ pub fn view() -> LayerWindow {
 
     let fade = ui.wallpaper.value();
 
-    let entries = wallpapers.entries();
-    let pages = entries.len().div_ceil(PAGE).max(1);
+    let query = ui.wallpaper_query.trim().to_lowercase();
+
+    let filtered: Vec<&Wallpaper> = wallpapers
+        .entries()
+        .iter()
+        .filter(|wallpaper| matches(wallpaper, &query))
+        .collect();
+
+    let pages = filtered.len().div_ceil(PAGE).max(1);
     let page = ui.wallpaper_page.min(pages - 1);
 
+    let page_entries: Vec<&Wallpaper> = filtered
+        .iter()
+        .skip(page * PAGE)
+        .take(PAGE)
+        .copied()
+        .collect();
+
     // this page's pictures are the ones worth converting right now
-    wallpapers.ensure_page(page);
+    wallpapers.ensure_page(&page_entries);
 
     // read the counter so a finished thumbnail wakes this window
     let _ = wallpapers.revision();
 
-    let mut rows: Vec<Box<dyn Widget>> = Vec::new();
+    let grid: Box<dyn Widget> = if filtered.is_empty() {
+        Box::new(
+            Rectangle::new()
+                .width(Parent)
+                .height(GRID_HEIGHT)
+                .fill(Color::TRANSPARENT)
+                .align_child(Center, Center)
+                .child(
+                    Text::new("Ничего не найдено")
+                        .size(12.0)
+                        .color(theme.muted),
+                ),
+        )
+    } else {
+        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
 
-    let page_entries: Vec<&Wallpaper> = entries.iter().skip(page * PAGE).take(PAGE).collect();
+        for chunk in page_entries.chunks(COLUMNS) {
+            let mut cards: Vec<Box<dyn Widget>> = chunk
+                .iter()
+                .map(|wallpaper| {
+                    Box::new(card(wallpaper, wallpapers.is_current(wallpaper), &theme))
+                        as Box<dyn Widget>
+                })
+                .collect();
 
-    for chunk in page_entries.chunks(COLUMNS) {
-        let mut cards: Vec<Box<dyn Widget>> = chunk
-            .iter()
-            .map(|wallpaper| {
-                Box::new(card(wallpaper, wallpapers.is_current(wallpaper), &theme))
-                    as Box<dyn Widget>
-            })
-            .collect();
+            // keep the last row aligned with the ones above it
+            while cards.len() < COLUMNS {
+                cards.push(Box::new(
+                    Rectangle::new()
+                        .width(CARD_WIDTH)
+                        .height(CARD_HEIGHT)
+                        .fill(Color::TRANSPARENT),
+                ));
+            }
 
-        // keep the last row aligned with the ones above it
-        while cards.len() < COLUMNS {
-            cards.push(Box::new(
+            rows.push(Box::new(
+                Row::new(cards)
+                    .width(Parent)
+                    .gap(GRID_GAP)
+                    .justify(Center),
+            ));
+        }
+
+        for _ in rows.len()..ROWS {
+            rows.push(Box::new(
                 Rectangle::new()
-                    .width(CARD_WIDTH)
+                    .width(Parent)
                     .height(CARD_HEIGHT)
                     .fill(Color::TRANSPARENT),
             ));
         }
 
-        rows.push(Box::new(
-            Row::new(cards)
+        Box::new(
+            Column::new(rows)
                 .width(Parent)
                 .gap(GRID_GAP)
-                .justify(Center),
-        ));
-    }
-
-    for _ in rows.len()..ROWS {
-        rows.push(Box::new(
-            Rectangle::new()
-                .width(Parent)
-                .height(CARD_HEIGHT)
-                .fill(Color::TRANSPARENT),
-        ));
-    }
-
-    let grid = Column::new(rows)
-        .width(Parent)
-        .gap(GRID_GAP)
-        .align(Center);
+                .align(Center),
+        )
+    };
 
     let body = Column::new(vec![
         Box::new(header(&theme)) as Box<dyn Widget>,
-        Box::new(grid),
+        Box::new(search(&theme)),
+        grid,
         Box::new(footer(page, pages, &theme)),
     ])
     .width(Parent)
@@ -402,7 +435,7 @@ pub fn view() -> LayerWindow {
         .width(Parent)
         .height(Parent)
         .radius(18.0)
-        .fill(theme.panel)
+        .fill(Color::BLACK)
         .border(1.0, theme.border)
         .padding(Padding {
             left: PADDING,
@@ -428,7 +461,7 @@ pub fn view() -> LayerWindow {
         })
         .layer(Layer::Overlay)
         .space(Zone::Ignore)
-        .keyboard(Keyboard::OnDemand)
+        .keyboard(Keyboard::Exclusive)
         .visible(ui.wallpaper_open || fade > 0.0)
         .namespace("amane-wallpapers")
         .on_key(|key| {
@@ -437,6 +470,65 @@ pub fn view() -> LayerWindow {
             }
         })
         .child(root)
+}
+
+fn search(theme: &Theme) -> Rectangle {
+    let input = TextInput::new("wallpaper-search")
+        .placeholder("Найти обои…")
+        .size(13.5)
+        .color(theme.fg)
+        .focused()
+        .on_change(|text| {
+            let mut ui = Ui::write();
+
+            ui.wallpaper_query = text;
+            ui.wallpaper_page = 0;
+        });
+
+    let contents = Row::new(vec![
+        Box::new(
+            Text::new("\u{f002}")
+                .size(13.0)
+                .color(theme.muted)
+                .font(ICON_FONT)
+                .tight(),
+        ) as Box<dyn Widget>,
+        Box::new(input),
+    ])
+    .width(Parent)
+    .gap(10.0)
+    .align(Center);
+
+    Rectangle::new()
+        .width(Parent)
+        .height(SEARCH_HEIGHT)
+        .radius(10.0)
+        .fill(theme.surface)
+        .padding(Padding {
+            left: 12.0,
+            right: 12.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .align_child(Center, Center)
+        .child(contents)
+}
+
+// every word has to appear in the name or folder, so "dark city" narrows fast
+fn matches(wallpaper: &Wallpaper, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    let haystack = format!(
+        "{} {}",
+        wallpaper.name().to_lowercase(),
+        wallpaper.path().to_string_lossy().to_lowercase()
+    );
+
+    query
+        .split_whitespace()
+        .all(|word| haystack.contains(word))
 }
 
 fn card(wallpaper: &Wallpaper, current: bool, theme: &Theme) -> Rectangle {

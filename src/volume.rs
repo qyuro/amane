@@ -374,7 +374,7 @@ pub fn osd(_monitor: &Monitor) -> LayerWindow {
         .width(Parent)
         .height(Parent)
         .radius(12.0)
-        .fill(theme.panel)
+        .fill(Color::BLACK)
         .border(1.0, theme.border)
         .padding(Padding {
             left: OSD_PADDING,
@@ -452,7 +452,7 @@ pub fn panel() -> LayerWindow {
         .width(Parent)
         .height(Parent)
         .radius(18.0)
-        .fill(theme.panel)
+        .fill(Color::BLACK)
         .border(1.0, theme.border)
         .padding(Padding {
             left: 16.0,
